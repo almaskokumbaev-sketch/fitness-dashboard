@@ -5,133 +5,69 @@ from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 
 # --- НАСТРОЙКИ ---
-st.set_page_config(page_title="Smart Business AI", layout="wide")
-st.title("🧠 Умный Анализ Бизнес-Процессов")
+st.set_page_config(page_title="Debug Mode", layout="wide")
+st.title("🛠 Режим Диагностики")
 
-# --- БОКОВАЯ ПАНЕЛЬ ---
-with st.sidebar:
-    st.header("⚙️ Настройки Мозга")
-    openai_api_key = st.text_input("Ключ OpenAI (sk-...)", type="password")
-    
-    st.divider()
-    st.subheader("📝 Контекст для ИИ")
-    st.info("Объясни роботу, что это за данные, чтобы он не гадал.")
-    user_context = st.text_area(
-        "Описание таблицы:", 
-        value="Это CRM фитнес-сети. Каждая строка - это запись клиента на пробное занятие. \nВажно: Данные за последние 3 дня могут быть неполными (менеджеры еще не внесли итоги). \nЦель: Понять, кто из менеджеров много записывает, и какая реальная доходимость (ПРИШЕЛ/НЕ ПРИШЕЛ).",
-        height=150
-    )
+# --- 1. ПРОВЕРКА КЛЮЧЕЙ ---
+st.subheader("1. Проверка ключей в Сейфе")
 
-# --- ЗАГРУЗКА ---
+# Проверяем Google Cloud
+if "gcp_service_account" in st.secrets:
+    st.success("✅ Секция [gcp_service_account] найдена!")
+    # Проверяем, что внутри есть данные
+    creds_dict = st.secrets["gcp_service_account"]
+    if "private_key" in creds_dict:
+        st.info(f"🔑 Private Key найден (длина: {len(creds_dict['private_key'])})")
+    else:
+        st.error("❌ Внутри нет private_key!")
+else:
+    st.error("❌ Секция [gcp_service_account] НЕ найдена. Проверь название в Secrets.")
+
+# Проверяем OpenAI
+if "OPENAI_API_KEY" in st.secrets:
+    st.success("✅ OpenAI Key найден!")
+else:
+    st.warning("⚠️ OpenAI Key не найден (но для запуска таблицы это не критично)")
+
+# --- 2. ПОПЫТКА ПОДКЛЮЧЕНИЯ ---
+st.subheader("2. Попытка подключения к Google")
+
 SHEET_NAME = 'мой первый дэшборд'
 
-@st.cache_data(ttl=60)
-def load_data():
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
+try:
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    # Пытаемся создать учетные данные
+    if "gcp_service_account" in st.secrets:
+        # Важно: превращаем объект Streamlit в обычный словарь Python
+        creds_json = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+        st.write("... Учетные данные созданы")
+        
         client = gspread.authorize(creds)
+        st.write("... Клиент авторизован")
+        
         sheet = client.open(SHEET_NAME).sheet1
-        return pd.DataFrame(sheet.get_all_records())
-    except Exception as e:
-        return None
-
-df = load_data()
-
-# --- ФУНКЦИЯ "УМНОГО ВЗГЛЯДА" ---
-def analyze_with_context(df_sample, columns_info, specific_stats):
-    if not openai_api_key:
-        return "⚠️ Нужен API ключ!"
-    
-    client = OpenAI(api_key=openai_api_key)
-    
-    prompt = f"""
-    Ты — Профессиональный Бизнес-Аналитик. Твоя задача — понять суть бизнес-процесса по "сырым" данным и дать стратегические советы.
-    
-    КОНТЕКСТ ОТ ВЛАДЕЛЬЦА:
-    "{user_context}"
-    
-    СТРУКТУРА ДАННЫХ (Колонки):
-    {columns_info}
-    
-    ПРИМЕР ДАННЫХ (Первые 5 строк):
-    {df_sample}
-    
-    ВАЖНАЯ СТАТИСТИКА (Агрегированная):
-    {specific_stats}
-    
-    ЗАДАЧА:
-    1. Проанализируй воронку: Как люди записываются? (Колонка 'Метод записи' и др).
-    2. Оцени менеджеров: Кто самый активный по количеству касаний?
-    3. Найди проблемы: Есть ли странности в статусах (например, много "Не пришел")?
-    4. Дай 3 конкретных совета по улучшению работы отдела продаж, учитывая, что последние дни могут быть не заполнены.
-    
-    Ответ дай на русском языке, структурированно, с выделением главного.
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o", 
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Ошибка: {e}"
-
-# --- ИНТЕРФЕЙС ---
-if st.button('🔄 Обновить'):
-    st.cache_data.clear()
-
-if df is not None:
-    # 1. Основные метрики
-    st.metric("Всего записей", len(df))
-    st.divider()
-    
-    col_left, col_right = st.columns([1, 2])
-    
-    with col_left:
-        st.subheader("🤖 AI-Аналитик")
-        if st.button("🧠 ВКЛЮЧИТЬ МОЗГ (Анализ всей таблицы)"):
-            if not openai_api_key:
-                st.error("Вставь ключ!")
-            else:
-                with st.spinner("Изучаю структуру таблицы и контекст..."):
-                    # --- ГОТОВИМ ДАННЫЕ ДЛЯ ИИ (УМНАЯ ВЫЖИМКА) ---
-                    
-                    # 1. Пример данных (только начало, чтобы он понял формат)
-                    sample_data = df.head(5).to_string()
-                    
-                    # 2. Список колонок
-                    cols = ", ".join(df.columns.tolist())
-                    
-                    # 3. Собираем статистику по ключевым текстовым колонкам (автоматически)
-                    stats_summary = ""
-                    # Ищем интересные колонки (где мало уникальных значений - это категории)
-                    for col in df.columns:
-                        if df[col].dtype == 'object': # Если это текст
-                            unique_count = df[col].nunique()
-                            # Если вариантов ответа меньше 20 (например, Имена, Статусы, Филиалы)
-                            if 1 < unique_count < 50: 
-                                top_vals = df[col].value_counts().head(5).to_dict()
-                                stats_summary += f"- Колонка '{col}': Топ значения {top_vals}\n"
-                    
-                    # Отправляем в GPT
-                    insight = analyze_with_context(sample_data, cols, stats_summary)
-                    st.markdown(insight)
-
-    with col_right:
-        st.subheader("🔎 Данные (Предпросмотр)")
-        st.dataframe(df.head(50)) # Показываем первые 50 строк
+        st.write(f"... Таблица '{SHEET_NAME}' найдена")
         
-        # Авто-графики по категориям
-        st.markdown("---")
-        st.write("**Быстрые срезы:**")
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
+        st.success(f"🎉 УСПЕХ! Скачано {len(df)} строк.")
+        st.dataframe(df.head())
         
-        # Ищем колонки для быстрых графиков
-        possible_cols = [c for c in df.columns if df[c].nunique() < 15 and df[c].nunique() > 1]
-        if possible_cols:
-            selected_col = st.selectbox("Построить график по:", possible_cols, index=0)
-            st.bar_chart(df[selected_col].value_counts())
+    else:
+        st.error("Нет ключей — нет подключения.")
 
-else:
-    st.error("Ошибка загрузки данных")
+except Exception as e:
+    # ВОТ ОНО! Самое важное: выводим полный текст ошибки
+    st.error("🔥 ОШИБКА ПОДКЛЮЧЕНИЯ ПОДРОБНО:")
+    st.code(str(e))
+    st.warning("👇 Что это значит:")
+    
+    err_text = str(e)
+    if "Sprite" in err_text or "SpreadsheetNotFound" in err_text:
+        st.write("Робот не видит таблицу. Проверь: 1) Название таблицы точное? 2) Дал ли ты доступ боту (python-bot@...) в настройках доступа таблицы?")
+    elif "Invalid RSA" in err_text:
+        st.write("Ошибка в самом ключе (private_key). Возможно, при копировании потерялись переносы строк.")
+    elif "project_id" in err_text:
+        st.write("Ошибка в структуре JSON/TOML файла.")
