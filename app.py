@@ -3,71 +3,124 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
+import toml
 
-# --- НАСТРОЙКИ ---
-st.set_page_config(page_title="Debug Mode", layout="wide")
-st.title("🛠 Режим Диагностики")
+# --- НАСТРОЙКИ СТРАНИЦЫ ---
+st.set_page_config(page_title="Fitness AI Dashboard", layout="wide", page_icon="💪")
+st.title("🚀 Smart Analytics: Фитнес Сеть")
 
-# --- 1. ПРОВЕРКА КЛЮЧЕЙ ---
-st.subheader("1. Проверка ключей в Сейфе")
-
-# Проверяем Google Cloud
-if "gcp_service_account" in st.secrets:
-    st.success("✅ Секция [gcp_service_account] найдена!")
-    # Проверяем, что внутри есть данные
-    creds_dict = st.secrets["gcp_service_account"]
-    if "private_key" in creds_dict:
-        st.info(f"🔑 Private Key найден (длина: {len(creds_dict['private_key'])})")
+# --- БОКОВАЯ ПАНЕЛЬ ---
+with st.sidebar:
+    st.header("🧠 Центр Управления")
+    
+    # Проверка ключа OpenAI
+    if "OPENAI_API_KEY" in st.secrets:
+        st.success("✅ AI-мозг подключен (Облако)")
+        openai_api_key = st.secrets["OPENAI_API_KEY"]
     else:
-        st.error("❌ Внутри нет private_key!")
-else:
-    st.error("❌ Секция [gcp_service_account] НЕ найдена. Проверь название в Secrets.")
+        openai_api_key = st.text_input("Введите OpenAI API Key", type="password")
+        if not openai_api_key:
+            st.warning("⚠️ Введите ключ, чтобы работал ИИ")
 
-# Проверяем OpenAI
-if "OPENAI_API_KEY" in st.secrets:
-    st.success("✅ OpenAI Key найден!")
-else:
-    st.warning("⚠️ OpenAI Key не найден (но для запуска таблицы это не критично)")
+    st.divider()
+    
+    st.info("📝 Контекст для робота:")
+    user_context = st.text_area(
+        "Опиши ситуацию:", 
+        value="Это CRM фитнес-сети. Задача: найти менеджеров с низкой конверсией и понять, почему падают продажи. Данные за последние 2-3 дня могут быть неполными.",
+        height=150
+    )
 
-# --- 2. ПОПЫТКА ПОДКЛЮЧЕНИЯ ---
-st.subheader("2. Попытка подключения к Google")
-
+# --- ФУНКЦИЯ ЗАГРУЗКИ (ГИБРИДНАЯ) ---
 SHEET_NAME = 'мой первый дэшборд'
 
-try:
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # Пытаемся создать учетные данные
-    if "gcp_service_account" in st.secrets:
-        # Важно: превращаем объект Streamlit в обычный словарь Python
-        creds_json = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
-        st.write("... Учетные данные созданы")
+@st.cache_data(ttl=60)
+def load_data():
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         
+        # 1. Если мы в Облаке (Streamlit Cloud)
+        if "gcp_service_account" in st.secrets:
+            # Превращаем секреты в словарь Python
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        
+        # 2. Если мы на Компьютере (Локально)
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
+            
         client = gspread.authorize(creds)
-        st.write("... Клиент авторизован")
-        
         sheet = client.open(SHEET_NAME).sheet1
-        st.write(f"... Таблица '{SHEET_NAME}' найдена")
-        
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-        st.success(f"🎉 УСПЕХ! Скачано {len(df)} строк.")
-        st.dataframe(df.head())
-        
-    else:
-        st.error("Нет ключей — нет подключения.")
+        return pd.DataFrame(sheet.get_all_records())
+    except Exception as e:
+        st.error(f"Ошибка подключения: {e}")
+        return None
 
-except Exception as e:
-    # ВОТ ОНО! Самое важное: выводим полный текст ошибки
-    st.error("🔥 ОШИБКА ПОДКЛЮЧЕНИЯ ПОДРОБНО:")
-    st.code(str(e))
-    st.warning("👇 Что это значит:")
+df = load_data()
+
+# --- ФУНКЦИЯ ИИ-АНАЛИЗА ---
+def ask_ai(prompt):
+    if not openai_api_key:
+        return "⚠️ Нет ключа API"
     
-    err_text = str(e)
-    if "Sprite" in err_text or "SpreadsheetNotFound" in err_text:
-        st.write("Робот не видит таблицу. Проверь: 1) Название таблицы точное? 2) Дал ли ты доступ боту (python-bot@...) в настройках доступа таблицы?")
-    elif "Invalid RSA" in err_text:
-        st.write("Ошибка в самом ключе (private_key). Возможно, при копировании потерялись переносы строк.")
-    elif "project_id" in err_text:
-        st.write("Ошибка в структуре JSON/TOML файла.")
+    try:
+        client = OpenAI(api_key=openai_api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o", # Можно поменять на gpt-3.5-turbo, если 4o дорого
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Ошибка OpenAI: {e}"
+
+# --- ГЛАВНЫЙ ИНТЕРФЕЙС ---
+if st.button('🔄 Обновить данные'):
+    st.cache_data.clear()
+
+if df is not None:
+    # МЕТРИКИ
+    total_leads = len(df)
+    st.metric("Всего Лидов", total_leads)
+    st.divider()
+    
+    # РАЗДЕЛЕНИЕ ЭКРАНА
+    col_left, col_right = st.columns([1, 2])
+    
+    with col_left:
+        st.subheader("🤖 AI-Директор")
+        if st.button("🔥 АНАЛИЗИРОВАТЬ СИТУАЦИЮ"):
+            with st.spinner("ИИ изучает таблицу..."):
+                # Готовим "выжимку" для ИИ
+                sample = df.head(5).to_string()
+                columns = ", ".join(df.columns)
+                
+                # Промпт
+                final_prompt = f"""
+                Роль: Опытный Коммерческий Директор.
+                Контекст от владельца: "{user_context}"
+                
+                Структура таблицы (Колонки): {columns}
+                Пример данных: 
+                {sample}
+                
+                ЗАДАЧА:
+                На основе структуры данных и контекста, напиши 3 стратегических совета.
+                Не лей воду. Пиши жестко и по делу. Используй эмодзи.
+                """
+                
+                result = ask_ai(final_prompt)
+                st.success("Готово!")
+                st.markdown(result)
+
+    with col_right:
+        st.subheader("📊 Данные")
+        st.dataframe(df.head(50))
+        
+        st.write("---")
+        # Автоматический график (если есть колонка Менеджер)
+        if "Менеджер" in df.columns:
+            st.caption("Активность менеджеров:")
+            st.bar_chart(df["Менеджер"].value_counts().head(10))
+
+else:
+    st.warning("Загрузка...")
