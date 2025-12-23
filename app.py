@@ -6,144 +6,169 @@ from openai import OpenAI
 import toml
 
 # --- НАСТРОЙКИ ---
-st.set_page_config(page_title="AI Business Analyst", layout="wide", page_icon="🦄")
+st.set_page_config(page_title="Universal AI Analyst", layout="wide", page_icon="🦄")
 st.title("🦄 Ваш Личный AI-Бизнес Аналитик")
 
-# --- ПОЛУЧАЕМ EMAIL БОТА ---
+# --- КЛЮЧИ ---
 try:
     if "gcp_service_account" in st.secrets:
         bot_email = st.secrets["gcp_service_account"]["client_email"]
     else:
-        bot_email = "python-bot@..." 
+        bot_email = "python-bot@..."
 except:
-    bot_email = "(email не найден)"
+    bot_email = "Ошибка ключей"
 
 # --- ИНСТРУКЦИЯ ---
-with st.expander("🚀 ИНСТРУКЦИЯ ПОДКЛЮЧЕНИЯ", expanded=True):
-    st.write("1. Скопируйте Email робота: code **" + bot_email + "**")
-    st.write("2. В Google Таблице нажмите **Настройки доступа (Share)** -> Добавьте этот email как **Редактора**.")
-    st.write("3. Вставьте ссылку на таблицу ниже.")
+with st.expander("🔌 Подключение таблицы", expanded=False):
+    st.write(f"1. Добавьте бота **{bot_email}** редактором в таблицу.")
+    st.write("2. Вставьте ссылку ниже.")
 
-sheet_url = st.text_input("🔗 Ссылка на таблицу:", placeholder="https://docs.google.com/...")
+sheet_url = st.text_input("🔗 Ссылка на Google Таблицу:", placeholder="https://docs.google.com/...")
 
-# --- 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ ЗАГРУЗКИ (FIX) ---
+# --- ЗАГРУЗКА ---
 @st.cache_data(ttl=60)
 def load_data(url):
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
-        # Авторизация
         if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
         else:
             creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
         
         client = gspread.authorize(creds)
         sheet = client.open_by_url(url).sheet1
-        
-        # ВМЕСТО get_all_records() ИСПОЛЬЗУЕМ БОЛЕЕ НАДЕЖНЫЙ МЕТОД
-        # Он не падает, если есть пустые колонки
         data = sheet.get_all_values()
         
-        if not data:
-            return None, "Таблица пуста"
-
-        # Превращаем в Pandas DataFrame вручную
-        headers = data.pop(0) # Первая строка - заголовки
+        if not data: return None, "Пустая таблица"
+        
+        headers = data.pop(0)
         df = pd.DataFrame(data, columns=headers)
-        
-        # Чистим пустые колонки (если заголовка нет - удаляем колонку)
-        df = df.loc[:, df.columns != '']
-        
-        return df
-        
+        df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
+        return df, None
     except Exception as e:
-        return None, e
+        return None, str(e)
 
-# --- ЛОГИКА ---
+def detect_types(df):
+    col_types = {}
+    for col in df.columns:
+        try:
+            pd.to_numeric(df[col].str.replace(r'[^\d.-]', '', regex=True))
+            col_types[col] = "🔢"
+            continue
+        except: pass
+        try:
+            pd.to_datetime(df[col], dayfirst=True)
+            col_types[col] = "📅"
+            continue
+        except: pass
+        col_types[col] = "🔤"
+    return col_types
+
+# --- ИНТЕРФЕЙС ---
 if sheet_url:
-    data_result = load_data(sheet_url)
+    df, error = load_data(sheet_url)
     
-    # Проверка: Если вернулся кортеж (None, ошибка)
-    if isinstance(data_result, tuple):
-        st.error("🚫 Ошибка подключения!")
-        st.write(f"Детали: {data_result[1]}")
+    if error:
+        st.error(f"Ошибка: {error}")
     else:
-        df = data_result
-        st.success(f"✅ Успешно! Загружено строк: {len(df)}")
+        st.success(f"✅ Данные загружены. Строк: {len(df)}")
+        col_types = detect_types(df)
         
-        # ==========================================
-        # УНИВЕРСАЛЬНЫЙ КОНСТРУКТОР
-        # ==========================================
+        st.sidebar.header("🛠 Конструктор Анализа")
         
-        st.sidebar.header("⚙️ Настройка")
-        all_columns = df.columns.tolist()
+        # 1. ГРУППИРОВКА
+        group_selection = st.sidebar.multiselect(
+            "1. По каким параметрам группируем?",
+            options=df.columns,
+            format_func=lambda x: f"{col_types[x]} {x}"
+        )
         
-        if len(all_columns) > 0:
-            # 1. Выбор колонок (С защитой от дурака)
-            def find_col(keywords):
-                # Ищем совпадение, если нет - берем первую колонку
-                found = next((x for x in all_columns if any(k in x.lower() for k in keywords)), None)
-                return all_columns.index(found) if found else 0
+        # 2. МЕТРИКИ
+        num_cols = [c for c, t in col_types.items() if t == "🔢"]
+        metric_selection = st.sidebar.multiselect(
+            "2. Что суммируем/считаем?",
+            options=num_cols,
+            format_func=lambda x: f"🔢 {x}"
+        )
+        
+        # 3. ФИЛЬТР
+        date_cols = [c for c, t in col_types.items() if t == "📅"]
+        if date_cols:
+            filter_date_col = st.sidebar.selectbox("Фильтр по дате (опция):", ["(Нет)"] + date_cols)
+            if filter_date_col != "(Нет)":
+                df[filter_date_col] = pd.to_datetime(df[filter_date_col], dayfirst=True, errors='coerce')
+                max_date = st.sidebar.date_input("Обрезать данные после:", pd.to_datetime("today"))
+                df = df[df[filter_date_col] <= pd.to_datetime(max_date)]
 
-            col_record = st.sidebar.selectbox("📅 Дата Записи", all_columns, index=find_col(["запис", "дата", "date"]))
-            col_visit = st.sidebar.selectbox("🏃 Дата Визита", all_columns, index=find_col(["придет", "визит", "visit"]))
-            col_mgr = st.sidebar.selectbox("👤 Менеджер", all_columns, index=find_col(["менеджер", "manager"]))
-            col_status = st.sidebar.selectbox("❓ Статус", all_columns, index=find_col(["статус", "result", "приш"]))
+        # --- ЯДРО ---
+        if group_selection:
+            st.subheader("📊 Живой Отчет")
             
-            # 2. Успех
-            unique_statuses = df[col_status].unique().tolist()
-            default_success = [x for x in unique_statuses if any(s in str(x).lower() for s in ["приш", "куп", "да", "ok"])]
-            
-            success_values = st.sidebar.multiselect("Что считать успехом?", unique_statuses, default=default_success)
+            df_grouped = df.copy()
+            for col in group_selection:
+                if col_types[col] == "📅":
+                    df_grouped[col] = pd.to_datetime(df_grouped[col], dayfirst=True, errors='coerce').dt.date.astype(str)
 
-            if success_values:
-                # Расчеты
-                df_clean = df.copy()
-                df_clean['Record_DT'] = pd.to_datetime(df_clean[col_record], dayfirst=True, errors='coerce')
-                df_clean['Visit_DT'] = pd.to_datetime(df_clean[col_visit], dayfirst=True, errors='coerce')
-                df_clean = df_clean.dropna(subset=['Record_DT', 'Visit_DT'])
-                df_clean['Is_Success'] = df_clean[col_status].isin(success_values)
-
-                # Фильтр будущего
-                limit_date = st.sidebar.date_input("Не считать после:", pd.to_datetime("2025-12-31"))
-                df_valid = df_clean[df_clean['Visit_DT'] <= pd.to_datetime(limit_date)]
-
-                # Цикл сделки
-                df_valid['Lag'] = (df_valid['Visit_DT'] - df_valid['Record_DT']).dt.days
-                def group_lag(d):
-                    if d == 0: return "День в день"
-                    if 1 <= d <= 7: return "1-7 дней"
-                    return "> Недели"
-                df_valid['Time_Group'] = df_valid['Lag'].apply(group_lag)
-
-                # Агрегация
-                stats = df_valid.groupby(['Time_Group', col_mgr]).agg(
-                    Всего=('Is_Success', 'count'),
-                    Успех=('Is_Success', 'sum')
-                )
-                stats['Конверсия %'] = (stats['Успех'] / stats['Всего'] * 100).round(1)
-
-                # Вывод
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    st.metric("Лидов", len(df_valid))
-                    st.metric("Продаж", df_valid['Is_Success'].sum())
-                    
-                    q = st.text_area("Вопрос ИИ:", "Где теряем деньги?")
-                    if st.button("🚀 СПРОСИТЬ"):
-                        if "OPENAI_API_KEY" in st.secrets:
-                            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                            with st.spinner("Думаю..."):
-                                prompt = f"Данные:\n{stats.to_string()}\nВопрос: {q}"
-                                res = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user", "content":prompt}])
-                                st.success("Инсайт:")
-                                st.markdown(res.choices[0].message.content)
-
-                with c2:
-                    st.dataframe(stats.style.background_gradient(cmap="RdYlGn", subset=['Конверсия %']))
+            if metric_selection:
+                for col in metric_selection:
+                    df_grouped[col] = pd.to_numeric(df_grouped[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
+                result_df = df_grouped.groupby(group_selection)[metric_selection].sum().reset_index()
+                count_df = df_grouped.groupby(group_selection).size().reset_index(name='Кол-во операций')
+                result_df = pd.merge(result_df, count_df, on=group_selection)
             else:
-                st.warning("👈 Выберите статусы успеха слева!")
+                result_df = df_grouped.groupby(group_selection).size().reset_index(name='Количество')
+            
+            sort_col = result_df.columns[-1]
+            result_df = result_df.sort_values(by=sort_col, ascending=False)
+            
+            st.dataframe(result_df, use_container_width=True)
+            
+            # --- AI ИНСАЙТЫ ---
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.info("💡 ИИ готов анализировать то, что есть.")
+                user_q = st.text_area("Вопрос к ИИ:", "Дай главные выводы по этим цифрам.")
+            
+            with col2:
+                if st.button("🚀 ПОЛУЧИТЬ РАЗБОР (Честный)"):
+                    if "OPENAI_API_KEY" in st.secrets:
+                        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                        with st.spinner("Думаю..."):
+                            
+                            csv_data = result_df.head(50).to_string()
+                            
+                            # --- ВОТ ОН, НОВЫЙ ПРОМПТ ---
+                            prompt = f"""
+                            Ты — Опытный, Честный и Амбициозный Бизнес-Аналитик.
+                            
+                            ТВОЯ ЗАДАЧА - ДАТЬ ОТВЕТ ИЗ ДВУХ ЧАСТЕЙ:
+
+                            ЧАСТЬ 1: ЖЕЛЕЗНЫЕ ФАКТЫ (Только правда)
+                            Посмотри на эту сводную таблицу:
+                            {csv_data}
+                            
+                            Дай 3 конкретных инсайта. Кто лидер? Кто аутсайдер? Где аномалия?
+                            Опирайся ТОЛЬКО на цифры, которые видишь. Не выдумывай. Если цифры говорят, что продаж 0 - так и пиши: "Продаж 0, у нас проблема".
+                            
+                            ЧАСТЬ 2: ТВОЙ ПОТЕНЦИАЛ (Opportunity)
+                            Посмотри на список доступных колонок в исходной таблице: {list(col_types.keys())}.
+                            
+                            Скажи клиенту честно, чего тебе не хватает, чтобы стать ЕЩЕ полезнее.
+                            Пример: "Ты дал мне продажи, но если добавишь колонку 'Себестоимость', я посчитаю тебе чистую прибыль".
+                            Пример: "Если добавишь 'Источник рекламы', я скажу, куда сливается бюджет".
+                            
+                            Фраза-триггер: "В целом, ты меня недооцениваешь. Дай мне эти данные, и я покажу тебе магию."
+                            
+                            Контекст пользователя: "{user_q}"
+                            """
+                            
+                            res = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user", "content":prompt}])
+                            st.markdown(res.choices[0].message.content)
+                    else:
+                        st.error("Нет ключа API")
+
+        else:
+            st.info("👈 Выберите параметры слева, чтобы построить отчет.")
+
 else:
-    st.info("👈 Вставьте ссылку, чтобы начать.")
+    st.info("👈 Вставьте ссылку на таблицу.")
