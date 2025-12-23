@@ -5,10 +5,10 @@ from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 import toml
 
-# --- НАСТРОЙКИ СТРАНИЦЫ ---
-st.set_page_config(page_title="AI Business Audit", layout="centered", page_icon="🦄")
-st.title("🦄 Авто-Аудит Бизнеса")
-st.markdown("### Вставьте ссылку — получите правду.")
+# --- НАСТРОЙКИ ---
+st.set_page_config(page_title="AI Business Audit Pro", layout="centered", page_icon="🦄")
+st.title("🦄 Глубокий Аудит Бизнеса (Pro)")
+st.markdown("### Загрузите ссылку — получите Стратегию.")
 
 # --- КЛЮЧИ ---
 try:
@@ -26,7 +26,7 @@ with st.expander("Как подключить таблицу?", expanded=False):
 
 sheet_url = st.text_input("🔗 Ссылка на Google Таблицу:", placeholder="https://docs.google.com/...")
 
-# --- ЗАГРУЗКА (С ЗАЩИТОЙ ОТ ДУБЛЕЙ) ---
+# --- ЗАГРУЗКА (FIX ПУСТЫХ ЗАГОЛОВКОВ) ---
 @st.cache_data(ttl=60)
 def load_data(url):
     try:
@@ -42,72 +42,97 @@ def load_data(url):
         
         if not data: return None, "Пустая таблица"
         
-        # 🔥 ЛЕЧЕНИЕ ДУБЛИКАТОВ В ЗАГОЛОВКАХ 🔥
+        # Улучшенная обработка заголовков
         headers = data.pop(0)
         unique_headers = []
         seen_headers = {}
         
-        for h in headers:
-            clean_h = str(h).strip() # Убираем лишние пробелы
+        for i, h in enumerate(headers):
+            clean_h = str(h).strip()
+            if not clean_h:
+                clean_h = f"Колонка_{i+1}" # Если пусто - даем имя "Колонка_N"
+            
             if clean_h in seen_headers:
                 seen_headers[clean_h] += 1
-                unique_headers.append(f"{clean_h}_{seen_headers[clean_h]}") # Делаем "Колонка_2"
+                unique_headers.append(f"{clean_h}_{seen_headers[clean_h]}")
             else:
                 seen_headers[clean_h] = 1
                 unique_headers.append(clean_h)
         
-        # Создаем таблицу с уникальными именами
         df = pd.DataFrame(data, columns=unique_headers)
-        
-        # Убираем полностью пустые строки и столбцы (где header пустой)
-        df = df.loc[:, df.columns != ''] 
-        df = df.dropna(how='all', axis=0)
-        
+        df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
         return df, None
     except Exception as e:
         return None, str(e)
 
-# --- АВТО-ПРОФАЙЛИНГ ---
-def profile_data(df):
-    summary = []
-    summary.append(f"Всего строк: {len(df)}")
-    summary.append(f"Всего колонок: {len(df.columns)}")
-    summary.append(f"Список колонок: {', '.join(df.columns)}")
+# --- 🕵️‍♂️ ШЕРЛОК ХОЛМС (УМНЫЙ АНАЛИЗАТОР) ---
+def deep_analyze_data(df):
+    report = []
     
-    # Анализ каждой колонки
+    # 1. Поиск Денег (Самая важная колонка)
+    money_col = None
+    max_sum = 0
+    
+    # 2. Поиск Категорий
+    cat_cols = []
+    
+    report.append(f"📊 ОБЪЕМ ДАННЫХ: {len(df)} строк")
+    
     for col in df.columns:
-        # Пропускаем пустые названия колонок
-        if not col.strip(): continue
-
-        # 1. Пробуем найти ЧИСЛА
+        # --- АНАЛИЗ ЧИСЕЛ ---
         try:
             # Чистим от валют и пробелов
-            numeric_series = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').dropna()
-            if not numeric_series.empty and len(numeric_series) > len(df) * 0.5:
-                total = numeric_series.sum()
-                avg = numeric_series.mean()
-                summary.append(f"📊 '{col}' (Число): Сумма={total:,.0f}, Среднее={avg:,.0f}")
-                continue
+            numeric = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').dropna()
+            if not numeric.empty and len(numeric) > len(df) * 0.1: # Если чисел хотя бы 10%
+                total = numeric.sum()
+                if total > max_sum: # Ищем колонку с самой большой суммой (Скорее всего Выручка)
+                    max_sum = total
+                    money_col = col
+                
+                report.append(f"💰 '{col}': Сумма = {total:,.0f} | Среднее = {numeric.mean():,.0f}")
         except: pass
-        
-        # 2. Пробуем найти ДАТЫ
-        try:
-            date_series = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dropna()
-            if not date_series.empty and len(date_series) > len(df) * 0.3:
-                min_date = date_series.min().date()
-                max_date = date_series.max().date()
-                summary.append(f"📅 '{col}' (Дата): {min_date} — {max_date}")
-                continue
-        except: pass
-        
-        # 3. Иначе это КАТЕГОРИЯ
-        # Берем только если уникальных значений немного (чтобы не перегрузить ИИ именами всех клиентов)
-        unique_count = df[col].nunique()
-        if unique_count < 50: 
-            top_vals = df[col].value_counts().head(5).to_dict()
-            summary.append(f"🔤 '{col}' (Текст): Топ значения -> {top_vals}")
-    
-    return "\n".join(summary)
+
+        # --- АНАЛИЗ ТЕКСТА (КАТЕГОРИИ) ---
+        if df[col].nunique() < 100 and df[col].nunique() > 1: # Категория (не уникальные ID)
+            cat_cols.append(col)
+            
+            # Считаем Топ и ПРОЦЕНТЫ
+            counts = df[col].value_counts().head(5)
+            total_rows = len(df)
+            
+            top_str = []
+            for name, count in counts.items():
+                percent = (count / total_rows) * 100
+                top_str.append(f"{name}: {count} шт ({percent:.1f}%)")
+            
+            # Проверяем: Это Менеджер или Клиент?
+            # Если топ-1 значение встречается чаще 5% случаев - скорее всего это Сотрудник/Статус/Город
+            role_hint = "(Возможно, Менеджер или Категория)" if (counts.iloc[0] / total_rows > 0.05) else "(Возможно, Имена клиентов)"
+            
+            report.append(f"🔤 '{col}' {role_hint}: {', '.join(top_str)}")
+
+    # --- 3. CROSS-ANALYSIS (ЗОЛОТАЯ ЖИЛА) ---
+    # Если нашли Деньги и Категории - скрещиваем их!
+    if money_col and cat_cols:
+        report.append("\n🏆 РЕЙТИНГ ЭФФЕКТИВНОСТИ (Кто приносит деньги?):")
+        for cat in cat_cols:
+            # Пропускаем, если слишком много уникальных (это клиенты)
+            if df[cat].nunique() > 20: continue 
+            
+            # Группируем Деньги по Категории
+            df[money_col] = pd.to_numeric(df[money_col].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
+            grouped = df.groupby(cat)[money_col].sum().sort_values(ascending=False).head(3)
+            
+            total_money = df[money_col].sum()
+            if total_money > 0:
+                best_performer = []
+                for name, val in grouped.items():
+                    share = (val / total_money) * 100
+                    best_performer.append(f"{name} = {val:,.0f} ({share:.1f}% от всей кассы)")
+                
+                report.append(f"📌 Лидеры по '{cat}':\n   " + "\n   ".join(best_performer))
+
+    return "\n".join(report)
 
 # --- ИНТЕРФЕЙС ---
 if sheet_url:
@@ -116,40 +141,50 @@ if sheet_url:
     if error:
         st.error(f"Ошибка: {error}")
     else:
-        st.success("✅ Данные получены.")
+        st.success("✅ Данные загружены.")
         
-        if st.button("🚀 ЗАПУСТИТЬ АНАЛИЗ (AI)", type="primary"):
+        if st.button("🚀 НАЙТИ ТОЧКИ РОСТА (AI)", type="primary"):
             if "OPENAI_API_KEY" in st.secrets:
                 
-                with st.status("🤖 ИИ изучает ваш бизнес...", expanded=True) as status:
-                    st.write("🔍 Сканирую структуру и исправляю дубликаты...")
-                    data_profile = profile_data(df)
-                    st.write("🧠 Пишу отчет...")
+                with st.status("🧠 Анализирую каждый байт...", expanded=True) as status:
+                    st.write("🔍 Провожу перекрестный анализ...")
+                    deep_stats = deep_analyze_data(df)
+                    st.code(deep_stats) # Покажем юзеру сухие цифры для прозрачности
                     
+                    st.write("💡 Генерирую стратегию...")
                     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
                     
+                    # --- ЕБЕЙШИЙ ПРОМПТ ---
                     prompt = f"""
-                    Ты — Элитный Бизнес-Аудитор. Тебе прислали "слепок" данных.
+                    Ты — Топовый Стратегический Консультант (уровень McKinsey).
+                    Твоя цель — найти "Аномалию" или "Рычаг роста".
                     
-                    СТАТИСТИКА (Python посчитал цифры):
-                    {data_profile}
+                    СУХИЕ ФАКТЫ (Python уже посчитал проценты и деньги):
+                    {deep_stats}
                     
-                    НАПИШИ ОТЧЕТ:
-                    1. 🧐 ЧТО ЭТО ЗА БИЗНЕС? (Вывод по колонкам)
+                    ЗАДАЧА:
+                    Напиши 3 блока. Без воды.
+
+                    1. 🎯 ГЛАВНЫЙ ИНСАЙТ (The One Thing)
+                    Найди самую мощную цифру. 
+                    Например: "Ваш менеджер Асель делает 40% всей выручки. Она кормит весь отдел. Если она уйдет — бизнес рухнет."
+                    Или: "Астана приносит 80% денег, но там всего 30% клиентов. Значит, там платят в 2 раза больше (высокий чек). Масштабируйте Астану!"
+                    (Используй посчитанные проценты из Фактов).
+
+                    2. 🕵️‍♂️ РАЗБОР ПОЛЕТОВ (Ошибки)
+                    Посмотри, кто "ест ресурсы", но не приносит результата.
+                    (Например: "Услуга Х популярна (50% записей), но денег дает мало. Поднимите на неё цену").
                     
-                    2. 💎 ЖЕЛЕЗНЫЕ ФАКТЫ
-                    - Кто лидер?
-                    - Какой оборот?
-                    - Тренды?
+                    3. 🔮 ЧЕГО НЕ ХВАТАЕТ (Upsell)
+                    Посмотри на колонки. Скажи: "Я посчитал выручку, но не вижу РАСХОДЫ. Добавьте колонку 'Себестоимость', и я найду скрытые убытки".
                     
-                    3. 🚀 СОВЕТ ПО ДАННЫМ
-                    - Чего не хватает? (Например: "Вижу Продажи, но нет Себестоимости").
-                    
-                    Пиши профессионально, используй Markdown.
+                    Важно:
+                    - Если видишь имя, которое повторяется часто — это СОТРУДНИК, а не клиент.
+                    - Используй Эмодзи.
+                    - Делай выводы на основе % (доли).
                     """
                     
                     response = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user", "content":prompt}])
-                    
                     status.update(label="Готово!", state="complete", expanded=False)
                 
                 st.markdown("---")
